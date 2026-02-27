@@ -189,6 +189,37 @@ For each stale hospital:
 | Caching | In-memory | Materialized views + Redis |
 | File Storage | Local disk | S3 / GCS |
 
+## Deliverables Checklist
+
+| # | Deliverable | Status | Location |
+|---|------------|--------|----------|
+| 1 | Full architecture diagram | Done | `docs/ARCHITECTURE.md` (this file) |
+| 2 | Folder structure | Done | `docs/ARCHITECTURE.md` + project layout |
+| 3 | Database schema SQL | Done | `database/migrations/001_initial_schema.sql` (PG) + `_sqlite.sql` |
+| 4 | Scraper implementation | Done | `src/main/ingestion/` (discovery, detector, downloader) |
+| 5 | Deduplication logic | Done | `src/main/processing/deduplicator.ts` |
+| 6 | Versioning strategy | Done | Append-only `pricing_data_history` + `is_current` flag |
+| 7 | Update engine logic | Done | `src/main/services/update-engine.ts` |
+| 8 | Analytics engine design | Done | `src/main/storage/repositories.ts` (AnalyticsRepo) |
+| 9 | Semantic query layer | Done | `src/main/semantic/query-engine.ts` |
+| 10 | UI implementation | Done | `src/renderer/` (6 pages, 6+ components) |
+| 11 | Installer packaging steps | Done | `package.json` (electron-builder config) |
+| 12 | Error handling design | Done | `docs/ERROR_HANDLING.md` + `src/main/utils/errors.ts` |
+| 13 | Scaling strategy | Done | This file (table above) |
+| 14 | Future roadmap | Done | This file (below) |
+
+### Bonus Deliverables
+
+| Feature | Status | Location |
+|---------|--------|----------|
+| Background scheduler | Done | `src/main/services/scheduler.ts` |
+| Price shift notifications | Done | `scheduler.ts` → `checkForPriceAlerts()` |
+| Export to CSV | Done | Query page CSV export button |
+| Docker support | Done | `Dockerfile` + `docker-compose.yml` |
+| State registries | Done | `src/main/ingestion/state-registries.ts` |
+| Unit tests | Done | `test/unit/` (deduplicator, normalizer, query-engine) |
+| Seed data script | Done | `scripts/seed.js` |
+
 ## Future Roadmap
 
 1. **Cloud Sync** — Optional cloud backend for multi-device access

@@ -1,10 +1,16 @@
 // ============================================================================
 // Analytics Page — Heat map, trends, variability, comparison
+// Uses Recharts for production-grade visualizations
 // ============================================================================
 import React, { useState, useEffect } from 'react';
+import {
+  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Legend, AreaChart, Area, Cell,
+  ScatterChart, Scatter, ZAxis,
+} from 'recharts';
 import { Card } from '../common/Card';
 import { Button } from '../common/Button';
-import { SearchInput } from '../common/SearchInput';
+import { USMap } from './USMap';
 import { COMMON_CPT_CODES, US_STATES } from '../../../shared/constants';
 
 type Tab = 'heatmap' | 'trends' | 'variability' | 'comparison';
@@ -14,6 +20,7 @@ interface StateMapData {
   avg_price: number;
   hospital_count: number;
   record_count: number;
+  median_price?: number;
 }
 
 interface TrendData {
@@ -21,6 +28,7 @@ interface TrendData {
   avg_price: number;
   min_price: number;
   max_price: number;
+  record_count: number;
 }
 
 interface VariabilityData {
@@ -31,6 +39,13 @@ interface VariabilityData {
   avg_price: number;
   spread: number;
   hospital_count: number;
+}
+
+interface ComparisonData {
+  period: string;
+  local_avg: number;
+  state_avg: number;
+  national_avg: number;
 }
 
 export function AnalyticsPage() {
@@ -90,46 +105,53 @@ export function AnalyticsPage() {
 }
 
 // ============================================================================
-// Heat Map View — Average pricing by state
+// Heat Map View — US Map + state tiles with color gradient
 // ============================================================================
 function HeatMapView() {
   const [data, setData] = useState<StateMapData[]>([]);
   const [cptCode, setCptCode] = useState('27447');
+  const [priceType, setPriceType] = useState('gross_charge');
   const [loading, setLoading] = useState(false);
 
   async function loadData() {
     setLoading(true);
     try {
-      const res = await window.electronAPI?.getStateMap?.(cptCode, 'gross_charge');
+      const res = await window.electronAPI?.getStateMap?.(cptCode, priceType);
       setData((res as StateMapData[]) ?? []);
     } catch { setData([]); }
     finally { setLoading(false); }
   }
 
-  useEffect(() => { loadData(); }, [cptCode]);
+  useEffect(() => { loadData(); }, [cptCode, priceType]);
 
   const maxPrice = Math.max(...data.map((d) => d.avg_price), 1);
+  const stateDataMap = new Map(data.map((d) => [d.state, d]));
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 'var(--space-4)', marginBottom: 'var(--space-6)', alignItems: 'center' }}>
-        <label style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)' }}>CPT Code:</label>
-        <select
-          value={cptCode}
-          onChange={(e) => setCptCode(e.target.value)}
-          style={{
-            padding: 'var(--space-2) var(--space-3)',
-            border: '1px solid var(--color-border)',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: 'var(--font-size-sm)',
-            fontFamily: 'var(--font-family)',
-            background: 'var(--color-surface)',
-          }}
-        >
-          {Object.entries(COMMON_CPT_CODES).map(([code, desc]) => (
-            <option key={code} value={code}>{code} — {desc}</option>
-          ))}
-        </select>
+      {/* Filters */}
+      <div style={{ display: 'flex', gap: 'var(--space-4)', marginBottom: 'var(--space-6)', alignItems: 'center', flexWrap: 'wrap' }}>
+        <div>
+          <label style={{ display: 'block', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', marginBottom: 'var(--space-1)' }}>
+            Procedure (CPT)
+          </label>
+          <select value={cptCode} onChange={(e) => setCptCode(e.target.value)} style={selectStyle}>
+            {Object.entries(COMMON_CPT_CODES).map(([code, desc]) => (
+              <option key={code} value={code}>{code} — {desc}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label style={{ display: 'block', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', marginBottom: 'var(--space-1)' }}>
+            Price Type
+          </label>
+          <select value={priceType} onChange={(e) => setPriceType(e.target.value)} style={selectStyle}>
+            <option value="gross_charge">Gross Charge</option>
+            <option value="discounted_cash">Cash Price</option>
+            <option value="min_negotiated">Min Negotiated</option>
+            <option value="max_negotiated">Max Negotiated</option>
+          </select>
+        </div>
       </div>
 
       {loading ? (
@@ -139,80 +161,96 @@ function HeatMapView() {
           <p style={{ color: 'var(--color-text-tertiary)' }}>No pricing data available. Update hospitals first.</p>
         </Card>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 'var(--space-2)' }}>
-          {data.sort((a, b) => b.avg_price - a.avg_price).map((d) => {
-            const intensity = d.avg_price / maxPrice;
-            const bg = `rgba(0, 102, 255, ${0.08 + intensity * 0.35})`;
-            return (
-              <Card key={d.state} style={{
-                padding: 'var(--space-3)', background: bg, border: 'none', textAlign: 'center',
-              }}>
-                <div style={{ fontSize: 'var(--font-size-lg)', fontWeight: 700 }}>{d.state}</div>
-                <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: 'var(--color-accent)' }}>
-                  ${Math.round(d.avg_price).toLocaleString()}
-                </div>
-                <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>
-                  {d.hospital_count} hospitals
-                </div>
-              </Card>
-            );
-          })}
-        </div>
+        <>
+          {/* US Map */}
+          <Card style={{ marginBottom: 'var(--space-6)', padding: 'var(--space-4)' }}>
+            <USMap stateData={stateDataMap} maxPrice={maxPrice} />
+          </Card>
+
+          {/* State Tiles */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 'var(--space-2)' }}>
+            {data.sort((a, b) => b.avg_price - a.avg_price).map((d) => {
+              const intensity = d.avg_price / maxPrice;
+              return (
+                <Card key={d.state} style={{
+                  padding: 'var(--space-3)',
+                  background: `rgba(0, 102, 255, ${0.05 + intensity * 0.3})`,
+                  border: 'none', textAlign: 'center',
+                }}>
+                  <div style={{ fontSize: 'var(--font-size-lg)', fontWeight: 700 }}>{d.state}</div>
+                  <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: '#0052CC' }}>
+                    ${Math.round(d.avg_price).toLocaleString()}
+                  </div>
+                  <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>
+                    {d.hospital_count} hospitals
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );
 }
 
 // ============================================================================
-// Trends View — Price changes over time (rendered as simple bar chart)
+// Trends View — Line/area chart for price changes over time
 // ============================================================================
 function TrendsView() {
   const [data, setData] = useState<TrendData[]>([]);
   const [cptCode, setCptCode] = useState('27447');
   const [state, setState] = useState('');
+  const [areaCode, setAreaCode] = useState('');
   const [loading, setLoading] = useState(false);
 
   async function loadData() {
     setLoading(true);
     try {
-      const res = await window.electronAPI?.getTrends?.(cptCode, state || undefined);
+      const res = await window.electronAPI?.getTrends?.(cptCode, state || undefined, areaCode || undefined);
       setData((res as TrendData[]) ?? []);
     } catch { setData([]); }
     finally { setLoading(false); }
   }
 
-  useEffect(() => { loadData(); }, [cptCode, state]);
+  useEffect(() => { loadData(); }, [cptCode, state, areaCode]);
 
-  const maxPrice = Math.max(...data.map((d) => d.max_price), 1);
+  const procedureName = COMMON_CPT_CODES[cptCode] ?? cptCode;
 
   return (
     <div>
+      {/* Filters */}
       <div style={{ display: 'flex', gap: 'var(--space-4)', marginBottom: 'var(--space-6)', alignItems: 'center', flexWrap: 'wrap' }}>
-        <select
-          value={cptCode}
-          onChange={(e) => setCptCode(e.target.value)}
-          style={{
-            padding: 'var(--space-2) var(--space-3)', border: '1px solid var(--color-border)',
-            borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-sm)', fontFamily: 'var(--font-family)',
-          }}
-        >
-          {Object.entries(COMMON_CPT_CODES).map(([code, desc]) => (
-            <option key={code} value={code}>{code} — {desc}</option>
-          ))}
-        </select>
-        <select
-          value={state}
-          onChange={(e) => setState(e.target.value)}
-          style={{
-            padding: 'var(--space-2) var(--space-3)', border: '1px solid var(--color-border)',
-            borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-sm)', fontFamily: 'var(--font-family)',
-          }}
-        >
-          <option value="">All States</option>
-          {Object.entries(US_STATES).map(([abbr, name]) => (
-            <option key={abbr} value={abbr}>{name}</option>
-          ))}
-        </select>
+        <div>
+          <label style={{ display: 'block', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', marginBottom: 'var(--space-1)' }}>
+            Procedure
+          </label>
+          <select value={cptCode} onChange={(e) => setCptCode(e.target.value)} style={selectStyle}>
+            {Object.entries(COMMON_CPT_CODES).map(([code, desc]) => (
+              <option key={code} value={code}>{code} — {desc}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label style={{ display: 'block', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', marginBottom: 'var(--space-1)' }}>
+            State
+          </label>
+          <select value={state} onChange={(e) => setState(e.target.value)} style={selectStyle}>
+            <option value="">All States</option>
+            {Object.entries(US_STATES).map(([abbr, name]) => (
+              <option key={abbr} value={abbr}>{name}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label style={{ display: 'block', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', marginBottom: 'var(--space-1)' }}>
+            Area Code
+          </label>
+          <input
+            value={areaCode} onChange={(e) => setAreaCode(e.target.value)}
+            placeholder="e.g., 215" maxLength={3} style={inputStyle}
+          />
+        </div>
       </div>
 
       {loading ? (
@@ -223,25 +261,32 @@ function TrendsView() {
         </Card>
       ) : (
         <Card>
-          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 'var(--space-2)', height: 300, padding: 'var(--space-4)' }}>
-            {data.map((d, i) => (
-              <div key={d.period} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-1)' }}>
-                <span style={{ fontSize: '10px', color: 'var(--color-text-tertiary)' }}>
-                  ${Math.round(d.avg_price).toLocaleString()}
-                </span>
-                <div style={{
-                  width: '100%', maxWidth: 40,
-                  height: `${(d.avg_price / maxPrice) * 240}px`,
-                  background: 'var(--color-accent)',
-                  borderRadius: 'var(--radius-sm) var(--radius-sm) 0 0',
-                  transition: 'height var(--transition-slow)',
-                  opacity: 0.7 + (i / data.length) * 0.3,
-                }} />
-                <span style={{ fontSize: '9px', color: 'var(--color-text-tertiary)', whiteSpace: 'nowrap' }}>
-                  {d.period.slice(5)}
-                </span>
-              </div>
-            ))}
+          <h3 style={{ fontSize: 'var(--font-size-base)', fontWeight: 600, marginBottom: 'var(--space-4)' }}>
+            {procedureName} — Price Trend
+          </h3>
+          <ResponsiveContainer width="100%" height={350}>
+            <AreaChart data={data} margin={{ top: 10, right: 30, left: 20, bottom: 5 }}>
+              <defs>
+                <linearGradient id="avgGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#0066FF" stopOpacity={0.15} />
+                  <stop offset="95%" stopColor="#0066FF" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+              <XAxis dataKey="period" tick={{ fontSize: 11, fill: '#9CA3AF' }} />
+              <YAxis tick={{ fontSize: 11, fill: '#9CA3AF' }} tickFormatter={(v) => `$${v.toLocaleString()}`} />
+              <Tooltip
+                contentStyle={{ borderRadius: 10, border: '1px solid #E5E7EB', boxShadow: '0 4px 16px rgba(0,0,0,0.06)' }}
+                formatter={(value: number) => [`$${value.toLocaleString()}`, '']}
+              />
+              <Legend />
+              <Area type="monotone" dataKey="max_price" stroke="#EF4444" fill="none" strokeDasharray="4 4" name="Max" />
+              <Area type="monotone" dataKey="avg_price" stroke="#0066FF" fill="url(#avgGrad)" strokeWidth={2} name="Average" />
+              <Area type="monotone" dataKey="min_price" stroke="#10B981" fill="none" strokeDasharray="4 4" name="Min" />
+            </AreaChart>
+          </ResponsiveContainer>
+          <div style={{ textAlign: 'center', marginTop: 'var(--space-2)', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>
+            {data.length} data points
           </div>
         </Card>
       )}
@@ -250,7 +295,7 @@ function TrendsView() {
 }
 
 // ============================================================================
-// Variability View — Most volatile procedures
+// Variability View — Horizontal bar chart of most volatile procedures
 // ============================================================================
 function VariabilityView() {
   const [data, setData] = useState<VariabilityData[]>([]);
@@ -264,13 +309,26 @@ function VariabilityView() {
       .finally(() => setLoading(false));
   }, []);
 
+  // Prepare chart data with min/avg/max for stacked-style display
+  const chartData = data.map((d) => ({
+    name: `${d.billing_code} ${d.description?.slice(0, 30) ?? ''}`,
+    min: d.min_price,
+    avg: d.avg_price - d.min_price,
+    max: d.max_price - d.avg_price,
+    fullMin: d.min_price,
+    fullAvg: d.avg_price,
+    fullMax: d.max_price,
+    spread: d.spread,
+    hospitals: d.hospital_count,
+  }));
+
   return (
     <div>
-      <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 600, marginBottom: 'var(--space-4)' }}>
+      <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 600, marginBottom: 'var(--space-2)' }}>
         Most Variable Procedures
       </h3>
       <p style={{ color: 'var(--color-text-secondary)', marginBottom: 'var(--space-6)', fontSize: 'var(--font-size-sm)' }}>
-        Procedures with the largest price spread across hospitals.
+        Procedures with the largest price spread across hospitals. Wider bars indicate greater variability.
       </p>
 
       {loading ? (
@@ -280,58 +338,62 @@ function VariabilityView() {
           <p style={{ color: 'var(--color-text-tertiary)' }}>No variability data yet.</p>
         </Card>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-          {data.map((d, i) => {
-            const maxSpread = data[0]?.spread ?? 1;
-            return (
+        <>
+          <Card style={{ marginBottom: 'var(--space-6)' }}>
+            <ResponsiveContainer width="100%" height={Math.max(400, data.length * 40)}>
+              <BarChart data={chartData} layout="vertical" margin={{ top: 5, right: 30, left: 150, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+                <XAxis type="number" tick={{ fontSize: 11, fill: '#9CA3AF' }} tickFormatter={(v) => `$${v.toLocaleString()}`} />
+                <YAxis dataKey="name" type="category" tick={{ fontSize: 10, fill: '#6B7280' }} width={140} />
+                <Tooltip
+                  contentStyle={{ borderRadius: 10, border: '1px solid #E5E7EB' }}
+                  formatter={(value: number, name: string) => {
+                    const labels: Record<string, string> = { min: 'Min Price', avg: 'Avg Range', max: 'Max Range' };
+                    return [`$${value.toLocaleString()}`, labels[name] ?? name];
+                  }}
+                />
+                <Bar dataKey="min" stackId="a" fill="#10B981" name="min" radius={[4, 0, 0, 4]} />
+                <Bar dataKey="avg" stackId="a" fill="#0066FF" name="avg" />
+                <Bar dataKey="max" stackId="a" fill="#EF4444" name="max" radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+
+          {/* Detail cards */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+            {data.slice(0, 10).map((d) => (
               <Card key={d.billing_code} style={{ padding: 'var(--space-4)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-2)' }}>
                   <div>
-                    <span style={{ fontFamily: 'monospace', fontWeight: 600, marginRight: 'var(--space-2)' }}>
-                      {d.billing_code}
-                    </span>
-                    <span style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--font-size-sm)' }}>
-                      {d.description}
-                    </span>
+                    <span style={{ fontFamily: 'monospace', fontWeight: 600, marginRight: 'var(--space-2)' }}>{d.billing_code}</span>
+                    <span style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--font-size-sm)' }}>{d.description}</span>
                   </div>
-                  <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>
-                    {d.hospital_count} hospitals
-                  </span>
+                  <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>{d.hospital_count} hospitals</span>
                 </div>
-
-                {/* Spread bar */}
-                <div style={{ position: 'relative', height: 8, background: 'var(--color-surface-hover)', borderRadius: 4 }}>
-                  <div style={{
-                    position: 'absolute', height: '100%', borderRadius: 4,
-                    background: `linear-gradient(90deg, var(--color-success), var(--color-warning), var(--color-error))`,
-                    width: `${(d.spread / maxSpread) * 100}%`,
-                    transition: 'width var(--transition-slow)',
-                  }} />
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'var(--space-2)', fontSize: 'var(--font-size-xs)' }}>
-                  <span style={{ color: 'var(--color-success)' }}>${d.min_price.toLocaleString()}</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--font-size-xs)' }}>
+                  <span style={{ color: '#10B981', fontWeight: 600 }}>Min: ${d.min_price.toLocaleString()}</span>
                   <span style={{ fontWeight: 600 }}>Avg: ${Math.round(d.avg_price).toLocaleString()}</span>
-                  <span style={{ color: 'var(--color-error)' }}>${d.max_price.toLocaleString()}</span>
+                  <span style={{ color: '#EF4444', fontWeight: 600 }}>Max: ${d.max_price.toLocaleString()}</span>
+                  <span style={{ color: 'var(--color-text-tertiary)' }}>Spread: ${d.spread.toLocaleString()}</span>
                 </div>
               </Card>
-            );
-          })}
-        </div>
+            ))}
+          </div>
+        </>
       )}
     </div>
   );
 }
 
 // ============================================================================
-// Comparison View — Historical comparison tool
+// Comparison View — Multi-line chart comparing local vs state vs national
 // ============================================================================
 function ComparisonView() {
   const [cptCode, setCptCode] = useState('27447');
   const [areaCode, setAreaCode] = useState('');
   const [startDate, setStartDate] = useState('2024-01-01');
   const [endDate, setEndDate] = useState('2026-12-31');
-  const [data, setData] = useState<unknown[]>([]);
+  const [data, setData] = useState<ComparisonData[]>([]);
   const [loading, setLoading] = useState(false);
 
   async function handleCompare() {
@@ -339,18 +401,20 @@ function ComparisonView() {
     setLoading(true);
     try {
       const res = await window.electronAPI?.getComparison?.(cptCode, areaCode, startDate, endDate);
-      setData((res as unknown[]) ?? []);
+      setData((res as ComparisonData[]) ?? []);
     } catch { setData([]); }
     finally { setLoading(false); }
   }
 
+  const procedureName = COMMON_CPT_CODES[cptCode] ?? cptCode;
+
   return (
     <div>
-      <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 600, marginBottom: 'var(--space-4)' }}>
+      <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 600, marginBottom: 'var(--space-2)' }}>
         Historical Comparison
       </h3>
       <p style={{ color: 'var(--color-text-secondary)', marginBottom: 'var(--space-6)', fontSize: 'var(--font-size-sm)' }}>
-        Compare pricing trends for a procedure in your area code versus state and national averages.
+        Compare pricing for a procedure in your area vs. state and national averages over time.
       </p>
 
       <Card style={{ marginBottom: 'var(--space-6)' }}>
@@ -359,98 +423,119 @@ function ComparisonView() {
             <label style={{ display: 'block', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', marginBottom: 'var(--space-1)' }}>
               Procedure
             </label>
-            <select
-              value={cptCode}
-              onChange={(e) => setCptCode(e.target.value)}
-              style={{
-                padding: 'var(--space-2) var(--space-3)', border: '1px solid var(--color-border)',
-                borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-sm)', fontFamily: 'var(--font-family)',
-              }}
-            >
+            <select value={cptCode} onChange={(e) => setCptCode(e.target.value)} style={selectStyle}>
               {Object.entries(COMMON_CPT_CODES).map(([code, desc]) => (
                 <option key={code} value={code}>{code} — {desc}</option>
               ))}
             </select>
           </div>
-
           <div>
             <label style={{ display: 'block', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', marginBottom: 'var(--space-1)' }}>
               Area Code
             </label>
-            <input
-              type="text"
-              value={areaCode}
-              onChange={(e) => setAreaCode(e.target.value)}
-              placeholder="e.g., 215"
-              maxLength={3}
-              style={{
-                padding: 'var(--space-2) var(--space-3)', border: '1px solid var(--color-border)',
-                borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-sm)',
-                fontFamily: 'var(--font-family)', width: 100,
-              }}
-            />
+            <input value={areaCode} onChange={(e) => setAreaCode(e.target.value)} placeholder="e.g., 215" maxLength={3} style={inputStyle} />
           </div>
-
           <div>
-            <label style={{ display: 'block', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', marginBottom: 'var(--space-1)' }}>
-              Start Date
-            </label>
-            <input
-              type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
-              style={{
-                padding: 'var(--space-2) var(--space-3)', border: '1px solid var(--color-border)',
-                borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-sm)', fontFamily: 'var(--font-family)',
-              }}
-            />
+            <label style={{ display: 'block', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', marginBottom: 'var(--space-1)' }}>Start</label>
+            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} />
           </div>
-
           <div>
-            <label style={{ display: 'block', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', marginBottom: 'var(--space-1)' }}>
-              End Date
-            </label>
-            <input
-              type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
-              style={{
-                padding: 'var(--space-2) var(--space-3)', border: '1px solid var(--color-border)',
-                borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-sm)', fontFamily: 'var(--font-family)',
-              }}
-            />
+            <label style={{ display: 'block', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', marginBottom: 'var(--space-1)' }}>End</label>
+            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
           </div>
-
           <Button onClick={handleCompare} loading={loading}>Compare</Button>
         </div>
       </Card>
 
       {data.length > 0 && (
-        <Card>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--font-size-sm)' }}>
-            <thead>
-              <tr style={{ borderBottom: '1px solid var(--color-border)' }}>
-                <th style={{ textAlign: 'left', padding: 'var(--space-2)', color: 'var(--color-text-tertiary)', fontWeight: 500 }}>Period</th>
-                <th style={{ textAlign: 'right', padding: 'var(--space-2)', color: 'var(--color-text-tertiary)', fontWeight: 500 }}>Local Avg</th>
-                <th style={{ textAlign: 'right', padding: 'var(--space-2)', color: 'var(--color-text-tertiary)', fontWeight: 500 }}>State Avg</th>
-                <th style={{ textAlign: 'right', padding: 'var(--space-2)', color: 'var(--color-text-tertiary)', fontWeight: 500 }}>National Avg</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(data as { period: string; local_avg: number; state_avg: number; national_avg: number }[]).map((d) => (
-                <tr key={d.period} style={{ borderBottom: '1px solid var(--color-border-light)' }}>
-                  <td style={{ padding: 'var(--space-2)' }}>{d.period}</td>
-                  <td style={{ padding: 'var(--space-2)', textAlign: 'right', fontWeight: 600 }}>
-                    {d.local_avg ? `$${Math.round(d.local_avg).toLocaleString()}` : '—'}
-                  </td>
-                  <td style={{ padding: 'var(--space-2)', textAlign: 'right' }}>
-                    {d.state_avg ? `$${Math.round(d.state_avg).toLocaleString()}` : '—'}
-                  </td>
-                  <td style={{ padding: 'var(--space-2)', textAlign: 'right' }}>
-                    {d.national_avg ? `$${Math.round(d.national_avg).toLocaleString()}` : '—'}
-                  </td>
+        <>
+          <Card style={{ marginBottom: 'var(--space-6)' }}>
+            <h4 style={{ fontSize: 'var(--font-size-base)', fontWeight: 600, marginBottom: 'var(--space-4)' }}>
+              {procedureName} — Area {areaCode} vs. Averages
+            </h4>
+            <ResponsiveContainer width="100%" height={350}>
+              <LineChart data={data} margin={{ top: 10, right: 30, left: 20, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+                <XAxis dataKey="period" tick={{ fontSize: 11, fill: '#9CA3AF' }} />
+                <YAxis tick={{ fontSize: 11, fill: '#9CA3AF' }} tickFormatter={(v) => `$${v.toLocaleString()}`} />
+                <Tooltip
+                  contentStyle={{ borderRadius: 10, border: '1px solid #E5E7EB' }}
+                  formatter={(value: number) => [`$${value.toLocaleString()}`, '']}
+                />
+                <Legend />
+                <Line type="monotone" dataKey="local_avg" stroke="#0066FF" strokeWidth={3} name="Local (Your Area)" dot={false} />
+                <Line type="monotone" dataKey="state_avg" stroke="#F59E0B" strokeWidth={2} strokeDasharray="6 3" name="State Average" dot={false} />
+                <Line type="monotone" dataKey="national_avg" stroke="#9CA3AF" strokeWidth={2} strokeDasharray="3 3" name="National Average" dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </Card>
+
+          {/* Data Table */}
+          <Card>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--font-size-sm)' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--color-border)' }}>
+                  <th style={thStyle}>Period</th>
+                  <th style={{ ...thStyle, textAlign: 'right' }}>Local Avg</th>
+                  <th style={{ ...thStyle, textAlign: 'right' }}>State Avg</th>
+                  <th style={{ ...thStyle, textAlign: 'right' }}>National Avg</th>
+                  <th style={{ ...thStyle, textAlign: 'right' }}>% vs National</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
+              </thead>
+              <tbody>
+                {data.map((d) => {
+                  const pctDiff = d.local_avg && d.national_avg
+                    ? ((d.local_avg - d.national_avg) / d.national_avg * 100).toFixed(1)
+                    : null;
+                  return (
+                    <tr key={d.period} style={{ borderBottom: '1px solid var(--color-border-light)' }}>
+                      <td style={tdStyle}>{d.period}</td>
+                      <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 600 }}>
+                        {d.local_avg ? `$${Math.round(d.local_avg).toLocaleString()}` : '—'}
+                      </td>
+                      <td style={{ ...tdStyle, textAlign: 'right' }}>
+                        {d.state_avg ? `$${Math.round(d.state_avg).toLocaleString()}` : '—'}
+                      </td>
+                      <td style={{ ...tdStyle, textAlign: 'right' }}>
+                        {d.national_avg ? `$${Math.round(d.national_avg).toLocaleString()}` : '—'}
+                      </td>
+                      <td style={{
+                        ...tdStyle, textAlign: 'right', fontWeight: 600,
+                        color: pctDiff && parseFloat(pctDiff) > 0 ? '#EF4444' : '#10B981',
+                      }}>
+                        {pctDiff ? `${parseFloat(pctDiff) > 0 ? '+' : ''}${pctDiff}%` : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </Card>
+        </>
       )}
     </div>
   );
 }
+
+// ============================================================================
+// Shared styles
+// ============================================================================
+const selectStyle: React.CSSProperties = {
+  padding: '6px 10px', border: '1px solid var(--color-border)',
+  borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-sm)',
+  fontFamily: 'var(--font-family)', background: 'var(--color-surface)',
+};
+
+const inputStyle: React.CSSProperties = {
+  padding: '6px 10px', border: '1px solid var(--color-border)',
+  borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-sm)',
+  fontFamily: 'var(--font-family)', width: 120,
+};
+
+const thStyle: React.CSSProperties = {
+  textAlign: 'left', padding: 'var(--space-2)', color: 'var(--color-text-tertiary)', fontWeight: 500, fontSize: 'var(--font-size-xs)',
+};
+
+const tdStyle: React.CSSProperties = {
+  padding: 'var(--space-2)',
+};

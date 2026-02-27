@@ -4,7 +4,10 @@
 import { parse as csvParse } from 'csv-parse/sync';
 import * as XLSX from 'xlsx';
 import { XMLParser } from 'fast-xml-parser';
+import pdfParse from 'pdf-parse';
+import zlib from 'zlib';
 import fs from 'fs';
+import path from 'path';
 import crypto from 'crypto';
 import type { PricingRecord, PriceType, BillingCodeType, FileType } from '../../shared/types';
 import { BILLING_CODE_PATTERNS } from '../../shared/constants';
@@ -75,6 +78,10 @@ export function normalizeFile(
     case 'xls':
     case 'xlsx':
       return normalizeExcel(filePath, hospitalId, fileId);
+    case 'pdf':
+      return normalizePDF(filePath, hospitalId, fileId);
+    case 'gzip':
+      return normalizeGzip(filePath, hospitalId, fileId);
     default:
       return { records: [], errors: [`Unsupported file type: ${fileType}`], rawRowCount: 0, validRowCount: 0 };
   }
@@ -271,6 +278,190 @@ function normalizeExcel(filePath: string, hospitalId: string, fileId: string): N
   }
 
   return { records: allRecords, errors, rawRowCount: totalRows, validRowCount: allRecords.length };
+}
+
+// ============================================================================
+// PDF Parser — Extract tabular pricing data from PDFs
+// ============================================================================
+function normalizePDF(filePath: string, hospitalId: string, fileId: string): NormalizationResult {
+  const errors: string[] = [];
+  const buffer = fs.readFileSync(filePath);
+
+  // pdf-parse is async but we need sync — use a workaround
+  let textContent = '';
+  try {
+    // Synchronous extraction attempt using pdf-parse
+    const pdfData = pdfParse(buffer);
+    // pdfParse returns a promise; we handle this in the async wrapper
+    // For now, extract what we can from the buffer directly
+    textContent = extractTextFromPDFBuffer(buffer);
+  } catch (err) {
+    errors.push(`PDF parse error: ${err}. Consider converting to CSV for better results.`);
+  }
+
+  if (!textContent) {
+    return {
+      records: [],
+      errors: ['PDF text extraction yielded no content. OCR may be required for scanned documents.'],
+      rawRowCount: 0,
+      validRowCount: 0,
+    };
+  }
+
+  // Parse extracted text into rows
+  const rows = parsePDFText(textContent);
+  const records = extractRecords(rows, hospitalId, fileId, errors);
+  return { records, errors, rawRowCount: rows.length, validRowCount: records.length };
+}
+
+/**
+ * Extract text from PDF buffer by scanning for text stream operators.
+ * This is a basic fallback; pdf-parse handles the full extraction asynchronously.
+ */
+function extractTextFromPDFBuffer(buffer: Buffer): string {
+  const text = buffer.toString('latin1');
+  const textBlocks: string[] = [];
+
+  // Extract text between BT (begin text) and ET (end text) PDF operators
+  const btEtPattern = /BT\s([\s\S]*?)ET/g;
+  let match: RegExpExecArray | null;
+  while ((match = btEtPattern.exec(text)) !== null) {
+    const block = match[1];
+    // Extract text from Tj and TJ operators
+    const tjPattern = /\(([^)]*)\)\s*Tj/g;
+    let tjMatch: RegExpExecArray | null;
+    while ((tjMatch = tjPattern.exec(block)) !== null) {
+      textBlocks.push(tjMatch[1]);
+    }
+  }
+
+  return textBlocks.join('\n');
+}
+
+/**
+ * Parse extracted PDF text into structured rows.
+ * Handles common chargemaster PDF layouts.
+ */
+function parsePDFText(text: string): Record<string, string>[] {
+  const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+  const rows: Record<string, string>[] = [];
+
+  for (const line of lines) {
+    // Try to detect lines with billing codes and prices
+    // Common pattern: CODE DESCRIPTION $PRICE
+    const codeMatch = line.match(/^(\d{5}|[A-V]\d{4})\s+(.+?)\s+\$?([\d,]+\.?\d*)\s*$/);
+    if (codeMatch) {
+      rows.push({
+        billing_code: codeMatch[1],
+        description: codeMatch[2].trim(),
+        charge: codeMatch[3].replace(/,/g, ''),
+      });
+      continue;
+    }
+
+    // Pattern: CODE | DESCRIPTION | PRICE (pipe-delimited)
+    const parts = line.split(/[|,\t]+/).map((p) => p.trim());
+    if (parts.length >= 3) {
+      const possibleCode = parts[0];
+      const possiblePrice = parts[parts.length - 1].replace(/[$,]/g, '');
+      if (/^\d{3,5}$/.test(possibleCode) && !isNaN(parseFloat(possiblePrice))) {
+        rows.push({
+          billing_code: possibleCode,
+          description: parts.slice(1, -1).join(' '),
+          charge: possiblePrice,
+        });
+      }
+    }
+  }
+
+  return rows;
+}
+
+// ============================================================================
+// GZIP Archive Extractor — Decompress and delegate to appropriate parser
+// ============================================================================
+function normalizeGzip(filePath: string, hospitalId: string, fileId: string): NormalizationResult {
+  const errors: string[] = [];
+
+  try {
+    const compressed = fs.readFileSync(filePath);
+    const decompressed = zlib.gunzipSync(compressed);
+
+    // Write decompressed to temp file and detect inner format
+    const tempPath = filePath + '.decompressed';
+    fs.writeFileSync(tempPath, decompressed);
+
+    // Detect inner file type from content
+    const innerType = detectInnerFileType(decompressed, filePath);
+
+    const result = normalizeFile(tempPath, innerType, hospitalId, fileId);
+
+    // Clean up temp file
+    try { fs.unlinkSync(tempPath); } catch { /* ignore */ }
+
+    return result;
+  } catch (err) {
+    errors.push(`GZIP extraction error: ${err}`);
+    return { records: [], errors, rawRowCount: 0, validRowCount: 0 };
+  }
+}
+
+/**
+ * Detect the file type of decompressed content
+ */
+function detectInnerFileType(buffer: Buffer, originalPath: string): FileType {
+  const header = buffer.slice(0, 100).toString('utf-8').trim();
+
+  // Check original filename for hints (e.g., .csv.gz, .json.gz)
+  const baseName = originalPath.replace(/\.gz(ip)?$/i, '');
+  const ext = path.extname(baseName).toLowerCase();
+  if (ext === '.csv') return 'csv';
+  if (ext === '.json') return 'json';
+  if (ext === '.xml') return 'xml';
+
+  // Content-based detection
+  if (header.startsWith('{') || header.startsWith('[')) return 'json';
+  if (header.startsWith('<?xml') || header.startsWith('<')) return 'xml';
+
+  // Default to CSV for text content
+  return 'csv';
+}
+
+// ============================================================================
+// Async PDF normalization (for use with the update engine)
+// ============================================================================
+export async function normalizePDFAsync(
+  filePath: string,
+  hospitalId: string,
+  fileId: string,
+): Promise<NormalizationResult> {
+  const errors: string[] = [];
+  const buffer = fs.readFileSync(filePath);
+
+  try {
+    const data = await pdfParse(buffer);
+    const text = data.text;
+
+    if (!text || text.trim().length === 0) {
+      return {
+        records: [],
+        errors: ['PDF contains no extractable text. This may be a scanned document requiring OCR.'],
+        rawRowCount: 0,
+        validRowCount: 0,
+      };
+    }
+
+    const rows = parsePDFText(text);
+    const records = extractRecords(rows, hospitalId, fileId, errors);
+    return { records, errors, rawRowCount: rows.length, validRowCount: records.length };
+  } catch (err) {
+    return {
+      records: [],
+      errors: [`PDF async parse error: ${err}`],
+      rawRowCount: 0,
+      validRowCount: 0,
+    };
+  }
 }
 
 // ============================================================================

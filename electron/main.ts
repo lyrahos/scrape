@@ -6,6 +6,7 @@ import path from 'path';
 import { initializeDatabase, closeDatabase } from '../src/main/storage/database';
 import { HospitalRepo, FileRepo, PricingRepo, AnalyticsRepo, UpdateLogRepo } from '../src/main/storage/repositories';
 import { discoverHospitalsFromCMS } from '../src/main/ingestion/hospital-discovery';
+import { discoverFromStateRegistries } from '../src/main/ingestion/state-registries';
 import { detectTransparencyFiles } from '../src/main/ingestion/file-detector';
 import { downloadManager } from '../src/main/ingestion/file-downloader';
 import { normalizeFile } from '../src/main/processing/normalizer';
@@ -92,10 +93,22 @@ function registerIpcHandlers(): void {
 
   // --- Ingestion ---
   ipcMain.handle(IPC_CHANNELS.INGESTION_DISCOVER, async () => {
-    const count = await discoverHospitalsFromCMS((progress) => {
+    // Phase 1: CMS data
+    const cmsCount = await discoverHospitalsFromCMS((progress) => {
       mainWindow?.webContents.send('ingestion:progress', progress);
     });
-    return { count };
+
+    // Phase 2: State registries (best-effort, don't block on failures)
+    let stateCount = 0;
+    try {
+      stateCount = await discoverFromStateRegistries(undefined, (msg) => {
+        mainWindow?.webContents.send('ingestion:progress', {
+          phase: 'state-registries', current: 0, total: 0, message: msg,
+        });
+      });
+    } catch { /* state registries are supplemental */ }
+
+    return { count: cmsCount + stateCount, cmsCount, stateCount };
   });
 
   ipcMain.handle(IPC_CHANNELS.INGESTION_SCRAPE_FILE, async (_event, hospitalId: string) => {
