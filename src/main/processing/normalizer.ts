@@ -302,7 +302,7 @@ function normalizePDF(filePath: string, hospitalId: string, fileId: string): Nor
   if (!textContent) {
     return {
       records: [],
-      errors: ['PDF text extraction yielded no content. OCR may be required for scanned documents.'],
+      errors: ['PDF text extraction yielded no content. Use normalizePDFAsync() for OCR fallback on scanned documents.'],
       rawRowCount: 0,
       validRowCount: 0,
     };
@@ -443,21 +443,77 @@ export async function normalizePDFAsync(
     const text = data.text;
 
     if (!text || text.trim().length === 0) {
+      // Attempt OCR fallback for scanned documents
+      return attemptOCRFallback(filePath, hospitalId, fileId);
+    }
+
+    const rows = parsePDFText(text);
+    const records = extractRecords(rows, hospitalId, fileId, errors);
+
+    // If text extraction yielded no records, try OCR as well
+    if (records.length === 0) {
+      const ocrResult = await attemptOCRFallback(filePath, hospitalId, fileId);
+      if (ocrResult.records.length > 0) return ocrResult;
+    }
+
+    return { records, errors, rawRowCount: rows.length, validRowCount: records.length };
+  } catch (err) {
+    // On parse failure, try OCR as last resort
+    try {
+      return await attemptOCRFallback(filePath, hospitalId, fileId);
+    } catch {
       return {
         records: [],
-        errors: ['PDF contains no extractable text. This may be a scanned document requiring OCR.'],
+        errors: [`PDF async parse error: ${err}`],
+        rawRowCount: 0,
+        validRowCount: 0,
+      };
+    }
+  }
+}
+
+/**
+ * OCR fallback — extracts text from scanned PDF using Tesseract
+ */
+async function attemptOCRFallback(
+  filePath: string,
+  hospitalId: string,
+  fileId: string,
+): Promise<NormalizationResult> {
+  const errors: string[] = [];
+  try {
+    const { isTesseractAvailable, extractTextWithOCR, parseOCRText } = await import('./ocr-fallback');
+
+    const available = await isTesseractAvailable();
+    if (!available) {
+      return {
+        records: [],
+        errors: ['PDF contains no extractable text and Tesseract OCR is not installed for fallback.'],
         rawRowCount: 0,
         validRowCount: 0,
       };
     }
 
-    const rows = parsePDFText(text);
+    const ocrText = await extractTextWithOCR(filePath);
+    if (!ocrText || ocrText.trim().length === 0) {
+      return {
+        records: [],
+        errors: ['OCR produced no text from scanned PDF.'],
+        rawRowCount: 0,
+        validRowCount: 0,
+      };
+    }
+
+    const rows = parseOCRText(ocrText);
     const records = extractRecords(rows, hospitalId, fileId, errors);
+    if (records.length > 0) {
+      errors.unshift('Records extracted via OCR fallback (Tesseract).');
+    }
     return { records, errors, rawRowCount: rows.length, validRowCount: records.length };
   } catch (err) {
     return {
       records: [],
-      errors: [`PDF async parse error: ${err}`],
+      errors: [`OCR fallback failed: ${err}. Consider converting the PDF to CSV manually.`],
       rawRowCount: 0,
       validRowCount: 0,
     };

@@ -277,16 +277,63 @@ export const UpdateLogRepo = {
 };
 
 // ============================================================================
+// HTTP Status History Repository
+// ============================================================================
+export const HttpStatusRepo = {
+  insert(entry: {
+    file_id: string;
+    hospital_id: string;
+    http_status?: number;
+    response_time_ms?: number;
+    content_length?: number;
+    etag?: string;
+    last_modified?: string;
+    error_message?: string;
+  }): void {
+    const db = getDatabase();
+    db.run(
+      `INSERT INTO http_status_history
+       (check_id, file_id, hospital_id, http_status, response_time_ms, content_length, etag, last_modified, error_message)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [generateId(), entry.file_id, entry.hospital_id,
+       entry.http_status ?? null, entry.response_time_ms ?? null,
+       entry.content_length ?? null, entry.etag ?? null,
+       entry.last_modified ?? null, entry.error_message ?? null]
+    );
+  },
+
+  getByFile(fileId: string, limit = 50): unknown[] {
+    return getDatabase().all(
+      'SELECT * FROM http_status_history WHERE file_id = ? ORDER BY checked_at DESC LIMIT ?',
+      [fileId, limit]
+    );
+  },
+
+  getRecent(limit = 100): unknown[] {
+    return getDatabase().all(
+      'SELECT * FROM http_status_history ORDER BY checked_at DESC LIMIT ?',
+      [limit]
+    );
+  },
+};
+
+// ============================================================================
 // Analytics Repository
 // ============================================================================
 export const AnalyticsRepo = {
-  getStateAverages(billingCode?: string, priceType?: string): StateAverage[] {
+  getStateAverages(billingCode?: string, priceType?: string, payer?: string, startDate?: string, endDate?: string): StateAverage[] {
     const db = getDatabase();
     const conditions: string[] = [];
     const params: unknown[] = [];
 
     if (billingCode) { conditions.push('p.billing_code = ?'); params.push(billingCode); }
     if (priceType) { conditions.push('p.price_type = ?'); params.push(priceType); }
+    if (payer) { conditions.push('p.payer = ?'); params.push(payer); }
+
+    // Use history table if date range is specified
+    const table = (startDate || endDate) ? 'pricing_data_history' : 'pricing_data_current';
+    if (startDate) { conditions.push('p.inserted_at >= ?'); params.push(startDate); }
+    if (endDate) { conditions.push('p.inserted_at <= ?'); params.push(endDate); }
 
     const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
 
@@ -294,7 +341,7 @@ export const AnalyticsRepo = {
       `SELECT h.state, AVG(p.price) as avg_price,
               COUNT(DISTINCT h.hospital_id) as hospital_count,
               COUNT(*) as record_count
-       FROM pricing_data_current p
+       FROM ${table} p
        JOIN hospitals h ON h.hospital_id = p.hospital_id
        ${where}
        GROUP BY h.state
@@ -326,15 +373,63 @@ export const AnalyticsRepo = {
     );
   },
 
+  /**
+   * Get trend data with hospital vs regional (area code) vs state comparison lines.
+   * Returns per-period averages for the specific hospital, its area code peers, and state.
+   */
+  getTrendsComparison(billingCode: string, hospitalId?: string, areaCode?: string, state?: string) {
+    const db = getDatabase();
+
+    // Determine state/areaCode from hospital if provided
+    let resolvedState = state;
+    let resolvedAreaCode = areaCode;
+    if (hospitalId && (!resolvedState || !resolvedAreaCode)) {
+      const hospital = db.get<{ state: string; area_code: string }>(
+        'SELECT state, area_code FROM hospitals WHERE hospital_id = ?', [hospitalId]
+      );
+      if (hospital) {
+        resolvedState = resolvedState || hospital.state;
+        resolvedAreaCode = resolvedAreaCode || hospital.area_code;
+      }
+    }
+
+    return db.all(
+      `SELECT strftime('%Y-%m', pdh.inserted_at) as period,
+              ${hospitalId ? `AVG(CASE WHEN pdh.hospital_id = ? THEN pdh.price END) as hospital_avg,` : ''}
+              ${resolvedAreaCode ? `AVG(CASE WHEN h.area_code = ? THEN pdh.price END) as area_avg,` : ''}
+              ${resolvedState ? `AVG(CASE WHEN h.state = ? THEN pdh.price END) as state_avg,` : ''}
+              AVG(pdh.price) as national_avg,
+              COUNT(*) as record_count
+       FROM pricing_data_history pdh
+       JOIN hospitals h ON h.hospital_id = pdh.hospital_id
+       WHERE pdh.billing_code = ?
+       GROUP BY strftime('%Y-%m', pdh.inserted_at)
+       ORDER BY period`,
+      [
+        ...(hospitalId ? [hospitalId] : []),
+        ...(resolvedAreaCode ? [resolvedAreaCode] : []),
+        ...(resolvedState ? [resolvedState] : []),
+        billingCode,
+      ]
+    );
+  },
+
   getVariability(limit = 10): VariabilityMetric[] {
     const db = getDatabase();
+    // Note: SQLite doesn't have a built-in STDDEV, so we compute it manually
+    // using the formula: sqrt(avg(x^2) - avg(x)^2)
     return db.all<VariabilityMetric>(
       `SELECT billing_code, billing_code_type,
               MIN(service_description) as description,
               MIN(price) as min_price, MAX(price) as max_price,
               AVG(price) as avg_price,
               (MAX(price) - MIN(price)) as spread,
-              COUNT(DISTINCT hospital_id) as hospital_count
+              COUNT(DISTINCT hospital_id) as hospital_count,
+              CASE
+                WHEN COUNT(*) > 1
+                THEN SQRT(AVG(price * price) - AVG(price) * AVG(price))
+                ELSE 0
+              END as std_dev
        FROM pricing_data_current
        WHERE price > 0
        GROUP BY billing_code, billing_code_type

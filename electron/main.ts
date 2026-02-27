@@ -14,6 +14,7 @@ import { deduplicateRecords, normalizeDescriptions } from '../src/main/processin
 import { runUpdateCycle, updateHospital } from '../src/main/services/update-engine';
 import { parseQuery, executeSemanticQuery } from '../src/main/semantic/query-engine';
 import { startScheduler, stopScheduler, getSchedulerConfig } from '../src/main/services/scheduler';
+import { startAPIServer, stopAPIServer } from '../src/main/services/api-server';
 import { IPC_CHANNELS } from '../src/shared/types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -54,10 +55,15 @@ function createWindow(): void {
 // ============================================================================
 // App Lifecycle
 // ============================================================================
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   initializeDatabase();
   createWindow();
   registerIpcHandlers();
+
+  // Start optional API server for PowerBI/Tableau/external integrations
+  try {
+    await startAPIServer(3001);
+  } catch { /* API server is optional */ }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -66,6 +72,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   stopScheduler();
+  stopAPIServer();
   closeDatabase();
   if (process.platform !== 'darwin') app.quit();
 });
@@ -156,12 +163,16 @@ function registerIpcHandlers(): void {
   });
 
   // --- Analytics ---
-  ipcMain.handle(IPC_CHANNELS.ANALYTICS_STATE_MAP, async (_event, billingCode?: string, priceType?: string) => {
-    return AnalyticsRepo.getStateAverages(billingCode, priceType);
+  ipcMain.handle(IPC_CHANNELS.ANALYTICS_STATE_MAP, async (_event, billingCode?: string, priceType?: string, payer?: string, startDate?: string, endDate?: string) => {
+    return AnalyticsRepo.getStateAverages(billingCode, priceType, payer, startDate, endDate);
   });
 
   ipcMain.handle(IPC_CHANNELS.ANALYTICS_TRENDS, async (_event, billingCode: string, state?: string, areaCode?: string) => {
     return AnalyticsRepo.getTrends(billingCode, state, areaCode);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.ANALYTICS_TRENDS_COMPARISON, async (_event, billingCode: string, hospitalId?: string, areaCode?: string, state?: string) => {
+    return AnalyticsRepo.getTrendsComparison(billingCode, hospitalId, areaCode, state);
   });
 
   ipcMain.handle(IPC_CHANNELS.ANALYTICS_VARIABILITY, async (_event, limit?: number) => {

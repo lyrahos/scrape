@@ -4,7 +4,7 @@
 import crypto from 'crypto';
 import axios from 'axios';
 import fs from 'fs';
-import { HospitalRepo, FileRepo, PricingRepo, UpdateLogRepo } from '../storage/repositories';
+import { HospitalRepo, FileRepo, PricingRepo, UpdateLogRepo, HttpStatusRepo } from '../storage/repositories';
 import { downloadManager, type DownloadResult } from '../ingestion/file-downloader';
 import { detectTransparencyFiles } from '../ingestion/file-detector';
 import { normalizeFile } from '../processing/normalizer';
@@ -124,8 +124,8 @@ async function updateHospitalFiles(
   let anyUpdate = false;
 
   for (const file of files) {
-    // Check if file URL still works
-    const fileCheck = await checkFileUrl(file.file_url);
+    // Check if file URL still works (and log to HTTP status history)
+    const fileCheck = await checkFileUrl(file.file_url, file.file_id, hospital.hospital_id);
 
     if (!fileCheck.exists) {
       // Link is dead — attempt rediscovery
@@ -233,7 +233,12 @@ async function updateHospitalFiles(
   return result;
 }
 
-async function checkFileUrl(url: string): Promise<{ exists: boolean; hash?: string }> {
+async function checkFileUrl(
+  url: string,
+  fileId?: string,
+  hospitalId?: string,
+): Promise<{ exists: boolean; hash?: string }> {
+  const startTime = Date.now();
   try {
     const resp = await axios.head(url, {
       timeout: 15000,
@@ -241,14 +246,29 @@ async function checkFileUrl(url: string): Promise<{ exists: boolean; hash?: stri
       validateStatus: (s) => s < 500,
     });
 
+    const etag = resp.headers['etag'] as string | undefined;
+    const lastModified = resp.headers['last-modified'] as string | undefined;
+    const contentLength = resp.headers['content-length'];
+    const responseTime = Date.now() - startTime;
+
+    // Log to HTTP status history
+    if (fileId && hospitalId) {
+      try {
+        HttpStatusRepo.insert({
+          file_id: fileId,
+          hospital_id: hospitalId,
+          http_status: resp.status,
+          response_time_ms: responseTime,
+          content_length: contentLength ? parseInt(contentLength, 10) : undefined,
+          etag,
+          last_modified: lastModified,
+        });
+      } catch { /* best-effort logging */ }
+    }
+
     if (resp.status >= 400) {
       return { exists: false };
     }
-
-    // Try ETag or generate hash from content-length + last-modified
-    const etag = resp.headers['etag'];
-    const lastModified = resp.headers['last-modified'];
-    const contentLength = resp.headers['content-length'];
 
     let hash: string | undefined;
     if (etag) {
@@ -258,7 +278,18 @@ async function checkFileUrl(url: string): Promise<{ exists: boolean; hash?: stri
     }
 
     return { exists: true, hash };
-  } catch {
+  } catch (err) {
+    // Log error to HTTP status history
+    if (fileId && hospitalId) {
+      try {
+        HttpStatusRepo.insert({
+          file_id: fileId,
+          hospital_id: hospitalId,
+          response_time_ms: Date.now() - startTime,
+          error_message: err instanceof Error ? err.message : 'Connection failed',
+        });
+      } catch { /* best-effort logging */ }
+    }
     return { exists: false };
   }
 }

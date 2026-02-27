@@ -215,6 +215,7 @@ export const IPC_CHANNELS = {
   // Analytics
   ANALYTICS_STATE_MAP: 'analytics:stateMap',
   ANALYTICS_TRENDS: 'analytics:trends',
+  ANALYTICS_TRENDS_COMPARISON: 'analytics:trendsComparison',
   ANALYTICS_VARIABILITY: 'analytics:variability',
   ANALYTICS_COMPARISON: 'analytics:comparison',
 

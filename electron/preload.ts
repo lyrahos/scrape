@@ -30,10 +30,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // Analytics
-  getStateMap: (billingCode?: string, priceType?: string) =>
-    ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_STATE_MAP, billingCode, priceType),
+  getStateMap: (billingCode?: string, priceType?: string, payer?: string, startDate?: string, endDate?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_STATE_MAP, billingCode, priceType, payer, startDate, endDate),
   getTrends: (billingCode: string, state?: string, areaCode?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_TRENDS, billingCode, state, areaCode),
+  getTrendsComparison: (billingCode: string, hospitalId?: string, areaCode?: string, state?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_TRENDS_COMPARISON, billingCode, hospitalId, areaCode, state),
   getVariability: (limit?: number) =>
     ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_VARIABILITY, limit),
   getComparison: (billingCode: string, areaCode: string, startDate: string, endDate: string) =>
@@ -62,8 +64,9 @@ export interface ElectronAPI {
   getUpdateLog: (limit?: number) => Promise<unknown[]>;
   onUpdateStatus: (cb: (status: unknown) => void) => void;
   onUpdateComplete: (cb: (result: unknown) => void) => void;
-  getStateMap: (billingCode?: string, priceType?: string) => Promise<unknown[]>;
+  getStateMap: (billingCode?: string, priceType?: string, payer?: string, startDate?: string, endDate?: string) => Promise<unknown[]>;
   getTrends: (billingCode: string, state?: string, areaCode?: string) => Promise<unknown[]>;
+  getTrendsComparison: (billingCode: string, hospitalId?: string, areaCode?: string, state?: string) => Promise<unknown[]>;
   getVariability: (limit?: number) => Promise<unknown[]>;
   getComparison: (billingCode: string, areaCode: string, startDate: string, endDate: string) => Promise<unknown[]>;
   semanticQuery: (query: string) => Promise<unknown>;
