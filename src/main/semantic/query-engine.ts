@@ -79,11 +79,20 @@ export function parseQuery(rawText: string): SemanticQuery {
     query.extracted_area_code = zipMatch[1].slice(0, 3);
   }
 
-  // Extract state
+  // Extract state — check full names first (unambiguous), then uppercase abbreviations
+  // to avoid matching common words like "in" (Indiana), "or" (Oregon), "me" (Maine)
   for (const [abbr, name] of Object.entries(US_STATES)) {
-    if (text.includes(name.toLowerCase()) || new RegExp(`\\b${abbr.toLowerCase()}\\b`).test(text)) {
+    if (text.includes(name.toLowerCase())) {
       query.extracted_state = abbr;
       break;
+    }
+  }
+  if (!query.extracted_state) {
+    for (const [abbr] of Object.entries(US_STATES)) {
+      if (new RegExp(`\\b${abbr}\\b`).test(rawText)) {
+        query.extracted_state = abbr;
+        break;
+      }
     }
   }
 
