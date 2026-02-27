@@ -17,8 +17,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-      - run: npm ci
+      - run: npm install
       - run: npm run package:linux
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -38,8 +37,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-      - run: npm ci
+      - run: npm install
       - run: npm run package:mac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -59,8 +57,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-      - run: npm ci
+      - run: npm install
       - run: npm run package:win
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
