@@ -120,7 +120,7 @@ async function updateHospitalFiles(
 ): Promise<UpdateResult> {
   let totalAdded = 0;
   let totalChanged = 0;
-  let totalRemoved = 0;
+  const totalRemoved = 0;
   let anyUpdate = false;
 
   for (const file of files) {

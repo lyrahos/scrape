@@ -62,8 +62,9 @@ export class SQLiteAdapter implements DatabaseAdapter {
 export function generateId(): string {
   // Generate UUID v4 without external dependency
   const bytes = new Uint8Array(16);
-  globalThis.crypto?.getRandomValues?.(bytes) ??
+  if (!globalThis.crypto?.getRandomValues?.(bytes)) {
     bytes.forEach((_, i, arr) => (arr[i] = Math.floor(Math.random() * 256)));
+  }
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
