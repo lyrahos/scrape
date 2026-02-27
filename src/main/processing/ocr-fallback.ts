@@ -61,7 +61,8 @@ export async function extractTextWithOCR(filePath: string): Promise<string> {
       } catch (err) {
         throw new Error(
           'pdftoppm (poppler-utils) is required for PDF OCR. ' +
-          'Install with: brew install poppler (macOS) or apt install poppler-utils (Linux).'
+          'Install with: brew install poppler (macOS) or apt install poppler-utils (Linux).',
+          { cause: err },
         );
       }
     } else {
