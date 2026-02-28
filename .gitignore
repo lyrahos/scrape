@@ -1,24 +1,22 @@
-# Dependencies
-node_modules/
-.pnp
-.pnp.js
-
-# Build
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
 dist/
 build/
-out/
-release/
-*.tsbuildinfo
+.venv/
+venv/
+env/
 
-# Database
+# Data
+downloads/
 *.db
 *.sqlite
-pgdata/
+*.sqlite3
 
 # Environment
 .env
 .env.local
-.env.production
 
 # IDE
 .vscode/
@@ -31,17 +29,4 @@ pgdata/
 Thumbs.db
 
 # Logs
-logs/
 *.log
-npm-debug.log*
-
-# Test
-coverage/
-
-# Electron
-*.dmg
-*.AppImage
-*.deb
-*.rpm
-*.exe
-*.msi
