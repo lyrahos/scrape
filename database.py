@@ -1,6 +1,7 @@
 """SQLite database for hospital pricing data."""
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 DEFAULT_DB = "hospital_pricing.db"
@@ -68,6 +69,16 @@ def create_schema(conn: sqlite3.Connection):
             raw_columns     TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS sync_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at  TEXT NOT NULL,
+            finished_at TEXT,
+            new_files   INTEGER DEFAULT 0,
+            updated_files INTEGER DEFAULT 0,
+            new_pricing_rows INTEGER DEFAULT 0,
+            status      TEXT DEFAULT 'running'
+        );
+
         CREATE INDEX IF NOT EXISTS idx_facilities_state ON facilities(state);
         CREATE INDEX IF NOT EXISTS idx_files_facility ON files(facility_id);
         CREATE INDEX IF NOT EXISTS idx_files_downloaded ON files(downloaded);
@@ -96,7 +107,33 @@ def upsert_facility(conn: sqlite3.Connection, facility: dict):
     ))
 
 
-def upsert_file(conn: sqlite3.Connection, facility_id: str, file_info: dict):
+def upsert_file(conn: sqlite3.Connection, facility_id: str, file_info: dict) -> str:
+    """Insert or update a file record. Returns 'new', 'updated', or 'unchanged'."""
+    fileid = file_info["fileid"]
+    new_retrieved = file_info.get("retrieved")
+    new_project = file_info.get("project")
+
+    # Check if file already exists and if its data has changed
+    existing = conn.execute(
+        "SELECT retrieved, project, downloaded FROM files WHERE fileid=?",
+        (fileid,),
+    ).fetchone()
+
+    if existing:
+        old_retrieved, old_project, was_downloaded = existing
+        data_changed = (new_retrieved != old_retrieved) or (new_project != old_project)
+
+        if data_changed and was_downloaded:
+            # File was updated on the source — reset download state and purge old pricing
+            conn.execute("UPDATE files SET downloaded=0, local_path=NULL WHERE fileid=?", (fileid,))
+            conn.execute("DELETE FROM pricing WHERE fileid=?", (fileid,))
+            # Delete old local file if it exists
+            row = conn.execute("SELECT local_path FROM files WHERE fileid=?", (fileid,)).fetchone()
+            if row and row[0]:
+                p = Path(row[0])
+                if p.exists():
+                    p.unlink()
+
     conn.execute("""
         INSERT INTO files (fileid, facility_id, filename, filesuffix, filetype,
                            retrieved, size, source_url, pageurl, converted, storage, project)
@@ -108,13 +145,19 @@ def upsert_file(conn: sqlite3.Connection, facility_id: str, file_info: dict):
             pageurl=excluded.pageurl, converted=excluded.converted,
             storage=excluded.storage, project=excluded.project
     """, (
-        file_info["fileid"], facility_id, file_info.get("filename"),
+        fileid, facility_id, file_info.get("filename"),
         file_info.get("filesuffix"), file_info.get("filetype"),
-        file_info.get("retrieved"), _int(file_info.get("size")),
+        new_retrieved, _int(file_info.get("size")),
         file_info.get("url"), file_info.get("pageurl"),
         1 if file_info.get("converted") else 0,
-        file_info.get("storage"), file_info.get("project"),
+        file_info.get("storage"), new_project,
     ))
+
+    if not existing:
+        return "new"
+    if existing and (new_retrieved != existing[0] or new_project != existing[1]):
+        return "updated"
+    return "unchanged"
 
 
 def mark_file_downloaded(conn: sqlite3.Connection, fileid: str, local_path: str):
@@ -161,6 +204,41 @@ def insert_pricing_batch(conn: sqlite3.Connection, rows: list[tuple]):
                              additional_generic_notes, raw_columns)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, rows)
+
+
+def start_sync_log(conn: sqlite3.Connection) -> int:
+    """Create a new sync log entry. Returns the log ID."""
+    now = datetime.now(timezone.utc).isoformat()
+    cur = conn.execute(
+        "INSERT INTO sync_log (started_at) VALUES (?)", (now,)
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def finish_sync_log(conn: sqlite3.Connection, log_id: int,
+                    new_files: int, updated_files: int, new_pricing_rows: int):
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute("""
+        UPDATE sync_log SET finished_at=?, new_files=?, updated_files=?,
+               new_pricing_rows=?, status='done'
+        WHERE id=?
+    """, (now, new_files, updated_files, new_pricing_rows, log_id))
+    conn.commit()
+
+
+def get_last_sync(conn: sqlite3.Connection) -> dict | None:
+    cur = conn.execute(
+        "SELECT started_at, finished_at, new_files, updated_files, new_pricing_rows, status "
+        "FROM sync_log ORDER BY id DESC LIMIT 1"
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return dict(zip(
+        ["started_at", "finished_at", "new_files", "updated_files", "new_pricing_rows", "status"],
+        row,
+    ))
 
 
 def get_stats(conn: sqlite3.Connection) -> dict:
